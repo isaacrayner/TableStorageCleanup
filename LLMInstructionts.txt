@@ -1,0 +1,118 @@
+
+## 🧠 Copilot Instruction – Azure Function to Clean Up WAD Logs Across 8 Storage Accounts
+
+**Context / Goal:**
+
+I want to build an **Azure Function (Timer Trigger)** that deletes old WAD logs from Azure Table Storage across multiple storage accounts.
+There are 8 different storage accounts, each containing several WAD tables such as `WADWindowsEventLogsTable`, `WADPerformanceCountersTable`, etc.
+Each table contains diagnostic logs written by Windows VMs.
+
+The function should:
+
+* run on a **schedule (e.g. daily)**,
+* connect to **multiple storage accounts**,
+* delete rows older than a given retention period (e.g. 30 days),
+* and log how many rows were deleted per account and table.
+
+---
+
+### ⚙️ Functional Requirements
+
+1. **Trigger**
+
+   * Use a **Timer Trigger**, scheduled via CRON (e.g. `0 0 3 * * *` for daily 3 AM UTC).
+
+2. **Storage Accounts**
+
+   * I have **8 connection strings**, stored in **Application Settings**:
+
+     ```
+     STORAGE_ACCOUNT_1
+     STORAGE_ACCOUNT_2
+     ...
+     STORAGE_ACCOUNT_8
+     ```
+   * The function should loop through all connection strings.
+
+3. **Tables**
+
+   * Each storage account contains multiple tables starting with “WAD”.
+     The function should enumerate all tables using the prefix filter (e.g. `WAD*`).
+
+4. **Date Logic**
+
+   * Each row has a `Timestamp` property (system property).
+   * Delete all rows where `Timestamp` < `DateTime.UtcNow - retentionDays`.
+   * The retention period (`retentionDays`) should be configurable via an environment variable.
+
+5. **Deletion**
+
+   * Use **batch delete operations** for efficiency (up to 100 entities per batch).
+   * Handle continuation tokens to process large tables.
+   * Log progress to Application Insights (account name, table name, rows deleted).
+
+6. **Error Handling**
+
+   * Continue processing remaining accounts/tables even if one fails.
+   * Log failed deletions with exception details.
+
+---
+
+### 🧩 Implementation Notes
+
+* Use **Azure.Data.Tables** SDK (`Azure.Data.Tables` NuGet package).
+* Structure suggestion:
+
+  * `CleanupTimer.cs` — main function.
+  * `TableCleaner.cs` — helper class to handle connection, query, and delete logic.
+* Use async/await for all Table operations.
+* Write logs to both console and ILogger.
+
+---
+
+### 🧰 Configuration Example (local.settings.json)
+
+```json
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet",
+    "STORAGE_ACCOUNT_1": "<conn-string-1>",
+    "STORAGE_ACCOUNT_2": "<conn-string-2>",
+    "STORAGE_ACCOUNT_3": "<conn-string-3>",
+    "RETENTION_DAYS": "30",
+    "TIMER_SCHEDULE": "0 0 3 * * *"
+  }
+}
+```
+
+---
+
+### 🧪 Example Log Output
+
+```
+[INFO] Cleaning WAD tables older than 30 days...
+[INFO] Processing storage account: diagstorage01
+[INFO] Table: WADWindowsEventLogsTable – 12,340 rows deleted
+[INFO] Table: WADPerformanceCountersTable – 6,812 rows deleted
+[INFO] Completed account diagstorage01
+[INFO] Cleanup complete. Total rows deleted: 19,152
+```
+
+---
+
+### ✅ Deliverable
+
+Generate a working **C# Azure Function (Timer Trigger)** project with:
+
+* Loop through 8 storage accounts via environment variables
+* Enumerate all WAD* tables
+* Delete rows older than configurable retention period
+* Log progress
+* Handle continuation tokens and batch deletes
+* Minimal cost and efficient execution
+
+---
+
+Would you like me to extend this prompt to include **diagnostic performance considerations** (e.g., throttling, parallelization across accounts, retry policy)? That would make Copilot produce more production-grade code.
