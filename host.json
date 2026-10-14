@@ -4,22 +4,26 @@
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": true,
-        "maxTelemetryItemsPerSecond": 20
-      }
+        "excludedTypes": "Request"
+      },
+      "enableLiveMetricsFilters": true
     },
     "logLevel": {
       "default": "Information",
-      "Microsoft.Azure.Functions.Worker": "Warning"
+      "Microsoft.Azure.Functions.Worker": "Warning",
+      "Azure.Core": "Warning"
     }
   },
-  "extensionBundle": {
-    "id": "Microsoft.Azure.Functions.ExtensionBundle",
-    "version": "[4.*, 5.0.0)"
+  "extensions": {
+    "http": {
+      "routePrefix": ""
+    },
+    "queues": {
+      "batchSize": 1,
+      "newBatchThreshold": 0,
+      "maxDequeueCount": 1,
+      "visibilityTimeout": "00:00:30"
+    }
   },
-  "functionTimeout": "00:30:00",
-  "retry": {
-    "strategy": "fixedDelay",
-    "maxRetryCount": 2,
-    "delayInterval": "00:00:05"
-  }
+  "functionTimeout": "00:30:00"
 }

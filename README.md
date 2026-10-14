@@ -1,78 +1,92 @@
-# Table Storage Cleanup - Azure Function
+# Table Storage Cleanup - Azure Function & Web UI
 
-An Azure Function that automatically cleans up old Windows Azure Diagnostics (WAD) logs from Azure Table Storage across multiple storage accounts.
+A production-ready Azure Function (.NET 8 isolated worker) that cleans up aged diagnostic logs (such as `WADWindowsEventLogsTable`, `WADPerformanceCountersTable`, etc.) across multiple Azure Storage accounts. It includes an embedded, secure web management dashboard, queue-backed manual runs with dry-run verification, and scheduled execution.
 
-## Overview
-
-This timer-triggered Azure Function deletes diagnostic log entries older than a configurable retention period from WAD tables (such as `WADWindowsEventLogsTable`, `WADPerformanceCountersTable`, etc.) across multiple storage accounts. It runs on a schedule, processes tables efficiently using batch operations, and provides detailed logging of cleanup activities.
+---
 
 ## Features
 
-- 🕒 **Scheduled execution** via CRON timer trigger
-- 🗄️ **Multi-account support** - dynamically processes any number of storage accounts
-- 🎯 **Smart table discovery** - automatically finds all WAD* tables
-- ⚡ **Efficient batch deletion** - deletes up to 100 rows per transaction
-- 📊 **Comprehensive logging** - tracks rows deleted per account and table
-- 🛡️ **Error resilience** - continues processing even if one account fails
-- ⚙️ **Configurable retention** - set custom retention period via environment variables
+- 🕒 **Scheduled Automation**: Runs on a configurable CRON schedule (via Azure Functions Timer Trigger).
+- 💻 **Built-in Web Management UI**: Hosted directly by the Azure Function app at the root URL (`/`) with zero external front-end build dependencies.
+- 🧪 **Safe Dry Runs**: Count matching records and preview deletions without modifying data. Manual deletion requires explicit `DELETE` confirmation.
+- 🗄️ **Multi-Account Discovery**: Dynamically scans any number of storage accounts via `STORAGE_ACCOUNT_*` settings.
+- 🔐 **Modern Authentication**: Supports connection strings, Key Vault references, or Azure Managed Identity (`DefaultAzureCredential`).
+- 🛡️ **Enterprise Security**: Built-in App Service Authentication (Easy Auth) integration; UI can be secured to specific user principal names (UPNs).
+- ⚡ **Asynchronous Worker**: Manual runs from the UI are queued to Azure Storage Queues to avoid HTTP execution timeouts.
+- 📊 **Run History & Metrics**: Stores run statistics and per-table execution history in table storage.
 
-## Requirements
+---
 
-- .NET 8.0 SDK
-- Azure Functions Core Tools v4
-- Azure subscription with storage accounts containing WAD tables
+## Architecture Overview
 
-## Configuration
-
-### Application Settings
-
-The function requires the following configuration values (set in `local.settings.json` for local development or as Application Settings in Azure):
-
-```json
-{
-  "IsEncrypted": false,
-  "Values": {
-    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
-    "STORAGE_ACCOUNT_1": "<connection-string-1>",
-    "STORAGE_ACCOUNT_2": "<connection-string-2>",
-    "STORAGE_ACCOUNT_3": "<connection-string-3>",
-    "RETENTION_DAYS": "90",
-    "TIMER_SCHEDULE": "0 0 3 * * *"
-  }
-}
+```
+                      ┌───────────────────────────────────────────────┐
+                      │             Azure Function App                │
+                      │                                               │
+  [ User Browser ] ───┼─► GET / (Static Web UI in wwwroot)            │
+                      │   GET /api/overview                           │
+                      │   GET /api/accounts/{key}/tables              │
+                      │   POST /api/runs (Dry run / Delete)           │
+                      │            │                                  │
+                      │            ▼ (Enqueue run request)            │
+                      │   [ Azure Storage Queue: cleanup-requests ]   │
+                      │            │                                  │
+                      │            ▼                                  │
+                      │   [ CleanupQueueWorker Function ]             │
+                      │                    │                          │
+  [ Timer Trigger ] ──┼────────────────────┼─► [ CleanupService ]     │
+  (CRON schedule)     │                    │          │               │
+                      └────────────────────┼──────────┼───────────────┘
+                                           │          │
+                                           ▼          ▼
+                             ┌─────────────────────────────────┐
+                             │    Target Azure Storage Accounts │
+                             │    - WADWindowsEventLogsTable   │
+                             │    - WADPerformanceCounters...  │
+                             │    - Custom table prefixes      │
+                             └─────────────────────────────────┘
 ```
 
-**Note:** You can add as many storage accounts as needed using the naming pattern `STORAGE_ACCOUNT_1`, `STORAGE_ACCOUNT_2`, `STORAGE_ACCOUNT_3`, etc. The function automatically discovers all settings that start with `STORAGE_ACCOUNT_` and processes them in order.
+---
 
-### Configuration Parameters
+## Configuration Settings
+
+Set these values in `local.settings.json` for local development or as **Application Settings** (Environment Variables) in Azure:
 
 | Setting | Description | Default |
-|---------|-------------|---------|
-| `STORAGE_ACCOUNT_1`, `STORAGE_ACCOUNT_2`, etc. | Connection strings for storage accounts to process. Add as many as needed using sequential numbering. Empty values are skipped. | *(at least one required)* |
-| `RETENTION_DAYS` | Number of days to retain logs. Rows older than this will be deleted. | `30` |
-| `TIMER_SCHEDULE` | CRON expression for execution schedule | `0 0 3 * * *` (daily at 3 AM UTC) |
+|---|---|---|
+| `AzureWebJobsStorage` | Connection string or table service URI for Function runtime, history, and queues. | `UseDevelopmentStorage=true` |
+| `STORAGE_ACCOUNT_<NAME>` | Connection string, storage account name, or table endpoint URL. Add one setting per target storage account. | *(at least one required)* |
+| `RETENTION_DAYS` | Number of days of logs to retain. Entities older than this cutoff will be cleaned. | `30` |
+| `MIN_RETENTION_DAYS` | Safety floor for retention; prevents accidental aggressive deletion. | `7` |
+| `TABLE_PREFIX` | Prefix for diagnostic tables to target. | `WAD` |
+| `TIMER_SCHEDULE` | CRON expression for scheduled cleanup. | `0 0 3 * * *` (3 AM UTC) |
+| `TIMER_DRY_RUN` | If `true`, scheduled runs will only count matching records without deleting. | `false` |
+| `UI_ENABLED` | Set to `false` to disable the web UI and management endpoints. | `true` |
+| `UI_ALLOW_ANONYMOUS` | Allows access to UI without authentication. Recommended **only** for local development. | `false` |
+| `UI_ALLOWED_USERS` | Comma-separated list of allowed user principal names / emails when using Easy Auth. | *(all authenticated users)* |
 
-### CRON Schedule Examples
-
-- `0 0 3 * * *` - Daily at 3:00 AM UTC
-- `0 0 */6 * * *` - Every 6 hours
-- `0 0 * * * 0` - Weekly on Sunday at midnight
-- `0 30 2 * * 1-5` - Weekdays at 2:30 AM
+---
 
 ## Local Development
 
-### 1. Clone and Build
+### Prerequisites
 
-```pwsh
-git clone <repository-url>
+- [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- [Azure Functions Core Tools v4](https://learn.microsoft.com/azure/azure-functions/functions-run-local)
+- [Azurite emulator](https://learn.microsoft.com/azure/storage/common/storage-use-azurite) or an active Azure Storage account for local testing
+
+### 1. Clone & Build
+
+```bash
+git clone https://github.com/your-org/TableStorageCleanup.git
 cd TableStorageCleanup
 dotnet build
 ```
 
-### 2. Configure Local Settings
+### 2. Configure `local.settings.json`
 
-Create or edit `local.settings.json`:
+Copy `local.settings.json.template` to `local.settings.json`:
 
 ```json
 {
@@ -80,264 +94,129 @@ Create or edit `local.settings.json`:
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
-    "STORAGE_ACCOUNT_1": "DefaultEndpointsProtocol=https;AccountName=account1;AccountKey=...;EndpointSuffix=core.windows.net",
-    "RETENTION_DAYS": "30",
-    "TIMER_SCHEDULE": "0 */5 * * * *"
+    "STORAGE_ACCOUNT_1": "DefaultEndpointsProtocol=https;AccountName=myteststorage;AccountKey=...;EndpointSuffix=core.windows.net",
+    "RETENTION_DAYS": "90",
+    "TIMER_SCHEDULE": "0 0 3 * * *",
+    "UI_ALLOW_ANONYMOUS": "true",
+    "UI_ENABLED": "true"
   }
 }
 ```
 
 ### 3. Run Locally
 
-```pwsh
+Start Azurite (if using local storage emulation):
+```bash
+azurite --silent --location c:\azurite --debug c:\azurite\debug.log
+```
+
+Start the function host:
+```bash
 func start
 ```
 
-The function will run according to the schedule specified in `TIMER_SCHEDULE`.
+Open `http://localhost:7071` in your browser to view the interactive management UI.
 
-### 4. Trigger Manually (for testing)
-
-To test immediately without waiting for the schedule:
-
-```pwsh
-# The function runs automatically on the schedule
-# For manual testing, modify RunOnStartup in CleanupTimer.cs temporarily
-```
+---
 
 ## Deployment to Azure
 
-See [README-deploy.md](README-deploy.md) for comprehensive deployment instructions including:
-- Quick deploy with Azure Functions Core Tools
-- Full infrastructure deployment with Azure CLI
-- Production best practices (Managed Identity, Key Vault, monitoring)
-- Troubleshooting guide
+### Option 1: Quick Deployment via Core Tools
 
-Quick deploy to existing Function App:
-
-```pwsh
-func azure functionapp publish <your-function-app-name>
-```
-
-## How It Works
-
-### Architecture
-
-```
-┌─────────────────┐
-│  Timer Trigger  │ (CRON schedule)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────────┐
-│  CleanupTimer.cs                    │
-│  - Reads configuration              │
-│  - Loops through storage accounts   │
-│  - Calls TableCleaner for each      │
-└────────┬────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────┐
-│  TableCleaner.cs                    │
-│  - Connects to storage account      │
-│  - Discovers WAD* tables            │
-│  - Queries old rows (Timestamp)     │
-│  - Batch deletes (100 per batch)    │
-└─────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────┐
-│  Azure Table Storage                │
-│  - WADWindowsEventLogsTable         │
-│  - WADPerformanceCountersTable      │
-│  - WADDiagnosticInfrastructureTable │
-│  - ...other WAD* tables             │
-└─────────────────────────────────────┘
-```
-
-### Execution Flow
-
-1. **Timer trigger fires** based on CRON schedule
-2. **Read configuration** - loads retention days and storage account connection strings
-3. **For each storage account**:
-   - Connect using connection string
-   - Query all tables starting with "WAD"
-   - For each WAD table:
-     - Query rows where `Timestamp < (Now - RetentionDays)`
-     - Group rows by `PartitionKey` (batch requirement)
-     - Delete in batches of 100 rows
-     - Log rows deleted
-4. **Log summary** - total rows deleted across all accounts
-
-### Sample Output
-
-```
-[2025-11-02 03:00:01] Cleaning WAD tables older than 90 days...
-[2025-11-02 03:00:01] Found 3 storage account(s) to process
-[2025-11-02 03:00:02] Processing storage account: diagstorage01
-[2025-11-02 03:00:15] Table: WADWindowsEventLogsTable – 12340 rows deleted
-[2025-11-02 03:00:28] Table: WADPerformanceCountersTable – 6812 rows deleted
-[2025-11-02 03:00:35] Table: WADDiagnosticInfrastructureLogsTable – 453 rows deleted
-[2025-11-02 03:00:35] Completed account diagstorage01. Rows deleted: 19605
-[2025-11-02 03:00:36] Processing storage account: diagstorage02
-[2025-11-02 03:00:48] Table: WADWindowsEventLogsTable – 8234 rows deleted
-[2025-11-02 03:00:55] Completed account diagstorage02. Rows deleted: 8234
-[2025-11-02 03:00:55] Cleanup complete. Total rows deleted: 27839
-```
-
-## Code Structure
-
-### Files
-
-- **`CleanupTimer.cs`** - Main Azure Function with timer trigger
-- **`TableCleaner.cs`** - Helper class that handles table enumeration and deletion logic
-- **`Program.cs`** - Function host startup configuration
-- **`host.json`** - Function host settings
-- **`TableStorageCleanup.csproj`** - Project file with NuGet dependencies
-
-### Key Dependencies
-
-```xml
-<PackageReference Include="Microsoft.Azure.Functions.Worker" Version="1.21.0" />
-<PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Timer" Version="4.2.0" />
-<PackageReference Include="Azure.Data.Tables" Version="12.11.0" />
-```
-
-## Performance Considerations
-
-### Efficiency
-
-- **Batch operations**: Deletes up to 100 rows per transaction (Azure Table Storage limit)
-- **Pagination**: Processes large tables using continuation tokens (1000 rows per page)
-- **Partition grouping**: Groups rows by `PartitionKey` to meet batch transaction requirements
-
-### Cost Optimization
-
-- Runs during off-peak hours (configurable)
-- Processes only tables with the "WAD" prefix
-- Uses efficient queries with timestamp filters
-- Minimal storage transaction costs
-
-### Throttling
-
-Azure Table Storage has rate limits. If you encounter throttling:
-- Increase the timer interval (run less frequently)
-- Add delays between batch operations
-- Process fewer storage accounts per execution
-
-## Monitoring
-
-### Application Insights
-
-If Application Insights is configured, you can:
-- View execution history and invocation counts
-- Track rows deleted over time
-- Set alerts for failures or anomalies
-- Monitor execution duration and performance
-
-### View Logs
-
-**In Azure Portal:**
-1. Navigate to your Function App
-2. Go to **Functions** > **CleanupTimer** > **Monitor**
-3. Check **Invocations** and **Logs**
-
-**Stream logs in real-time:**
-```pwsh
-func azure functionapp logstream <your-function-app-name>
-```
-
-**Query Application Insights:**
-```kusto
-traces
-| where operation_Name == "CleanupTimer"
-| where timestamp > ago(7d)
-| project timestamp, message, severityLevel
-| order by timestamp desc
-```
-
-## Security Best Practices
-
-### For Production
-
-1. **Use Azure Key Vault** for connection strings:
+1. Sign in to your Azure CLI:
+   ```bash
+   az login
    ```
-   STORAGE_ACCOUNT_1=@Microsoft.KeyVault(SecretUri=https://your-vault.vault.azure.net/secrets/StorageAccount1/)
+2. Publish to your existing Azure Function App:
+   ```bash
+   func azure functionapp publish <your-function-app-name>
    ```
 
-2. **Use Managed Identity** instead of connection strings:
-   - Enable managed identity on the Function App
-   - Grant "Storage Table Data Contributor" role to the identity on each storage account
-   - Update code to use `DefaultAzureCredential`
+### Option 2: Infrastructure Setup using Azure CLI
 
-3. **Network Security**:
-   - Enable VNET integration for the Function App
-   - Configure private endpoints for storage accounts
-   - Disable public network access where possible
+```bash
+# Variables
+RESOURCE_GROUP="rg-tablecleanup-prod"
+LOCATION="westeurope"
+STORAGE_ACCOUNT="sttablecleanupprod"
+FUNCTION_APP="func-tablecleanup-prod"
+APP_INSIGHTS="appi-tablecleanup-prod"
 
-4. **Least Privilege**:
-   - Use role-based access control (RBAC)
-   - Grant only necessary permissions (table read/delete)
+# 1. Create Resource Group
+az group create --name $RESOURCE_GROUP --location $LOCATION
 
-## Troubleshooting
+# 2. Create Storage Account for the Function host
+az storage account create \
+  --name $STORAGE_ACCOUNT \
+  --location $LOCATION \
+  --resource-group $RESOURCE_GROUP \
+  --sku Standard_LRS \
+  --kind StorageV2
 
-### Common Issues
+# 3. Create Application Insights
+az monitor app-insights component create \
+  --app $APP_INSIGHTS \
+  --location $LOCATION \
+  --resource-group $RESOURCE_GROUP \
+  --application-type web
 
-**Function not triggering on schedule**
-- Verify `AzureWebJobsStorage` is configured correctly
-- Check `TIMER_SCHEDULE` is a valid CRON expression
-- Review function logs for errors
+# 4. Create the Function App (.NET 8 Isolated on Linux)
+az functionapp create \
+  --name $FUNCTION_APP \
+  --storage-account $STORAGE_ACCOUNT \
+  --resource-group $RESOURCE_GROUP \
+  --consumption-plan-location $LOCATION \
+  --runtime dotnet-isolated \
+  --runtime-version 8 \
+  --functions-version 4 \
+  --os-type Linux
 
-**No rows deleted despite old data**
-- Verify `RETENTION_DAYS` is set correctly
-- Check row timestamps are actually older than retention period
-- Ensure connection strings are valid
+# 5. Configure App Settings
+az functionapp config appsettings set \
+  --name $FUNCTION_APP \
+  --resource-group $RESOURCE_GROUP \
+  --settings \
+    "RETENTION_DAYS=90" \
+    "TIMER_SCHEDULE=0 0 3 * * *" \
+    "STORAGE_ACCOUNT_1=@Microsoft.KeyVault(SecretUri=https://<your-vault>.vault.azure.net/secrets/StorageAccount1/)"
 
-**Batch delete failures**
-- Check partition key grouping (batch requires same partition)
-- Verify table has rows matching the filter
-- Review error logs for specific exceptions
-
-**Timeout errors**
-- Increase function timeout in `host.json`
-- Process fewer storage accounts per execution
-- Add pagination/continuation logic for very large tables
-
-### Enable Detailed Logging
-
-In `host.json`, set log level to `Debug`:
-
-```json
-{
-  "version": "2.0",
-  "logging": {
-    "logLevel": {
-      "default": "Debug"
-    }
-  }
-}
+# 6. Publish the code
+dotnet publish -c Release
+func azure functionapp publish $FUNCTION_APP
 ```
 
-## Contributing
+---
 
-Suggestions and improvements welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request with a clear description
+## Security & Best Practices
+
+1. **Authentication (Easy Auth)**:
+   - In Azure Portal, navigate to your Function App > **Authentication** > **Add identity provider** (Microsoft Entra ID).
+   - Once configured, all requests to the Web UI and API are authenticated automatically.
+   - Restrict access to authorized operators using `UI_ALLOWED_USERS`.
+
+2. **Managed Identity / Key Vault**:
+   - Instead of storing raw connection strings, use Azure Key Vault references or Managed Identities.
+   - For Managed Identity, provide the storage account name or endpoint as the setting value (e.g. `STORAGE_ACCOUNT_PROD=https://mystorage.table.core.windows.net`), enable a System-Assigned Managed Identity on the Function App, and grant `Storage Table Data Contributor` on the target storage account.
+
+3. **Protection Against Accidental Deletion**:
+   - `MIN_RETENTION_DAYS` enforces a minimum retention period server-side.
+   - Deletion requests from the UI require explicit confirmation by typing `DELETE`.
+   - The scheduled timer trigger can be run in `TIMER_DRY_RUN=true` mode if automated deletion is not desired.
+
+---
+
+## Supporting Modernization Scripts
+
+The [`scripts/`](scripts/) directory contains PowerShell utilities to assist during migrations from legacy diagnostics:
+- [`Remove-WadExtension.ps1`](scripts/Remove-WadExtension.ps1): Audits and uninstalls legacy Windows Azure Diagnostics (WAD) and OMS agents from Azure VMs.
+- [`Deploy-AMAInfrastructure.ps1`](scripts/Deploy-AMAInfrastructure.ps1): Deploys modern Azure Monitor Agent (AMA) infrastructure with Data Collection Rules (DCR).
+- [`Delete-WadTables.ps1`](scripts/Delete-WadTables.ps1): Utility to delete entire legacy tables in bulk once migration and validation are complete.
+- [`Update-AmaExtensions.ps1`](scripts/Update-AmaExtensions.ps1): Configures automatic minor version upgrades for Azure Monitor Agent extensions.
+
+Refer to [`scripts/README.md`](scripts/README.md) for script usage details.
+
+---
 
 ## License
 
-[Specify your license here]
-
-## Support
-
-For issues or questions:
-- Check the [Troubleshooting](#troubleshooting) section
-- Review [Azure Functions documentation](https://learn.microsoft.com/azure/azure-functions/)
-- Open an issue in the repository
-
-## References
-
-- [Azure Functions Timer Trigger](https://learn.microsoft.com/azure/azure-functions/functions-bindings-timer)
-- [Azure Table Storage SDK](https://learn.microsoft.com/azure/storage/tables/table-storage-overview)
-- [CRON Expression Reference](https://learn.microsoft.com/azure/azure-functions/functions-bindings-timer#ncrontab-expressions)
-- [Azure Functions Best Practices](https://learn.microsoft.com/azure/azure-functions/functions-best-practices)
+This project is licensed under the [MIT License](LICENSE).

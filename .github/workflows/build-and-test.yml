@@ -1,0 +1,38 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore TableStorageCleanup.sln
+
+    - name: Build
+      run: dotnet build TableStorageCleanup.sln -c Release --no-restore
+
+    - name: Run Tests
+      run: dotnet test TableStorageCleanup.sln -c Release --no-build --verbosity normal
+
+    - name: Security Scan (Secret & Customer Pattern Detection)
+      run: |
+        echo "Verifying no local secrets or private configuration exist in tracked files..."
+        if git grep -iE 'DefaultEndpointsProtocol=https.*AccountKey=[A-Za-z0-9+/=]{20,}' -- ':!local.settings.json.template'; then
+          echo "Error: Found potential real Azure Storage connection string or account key in repository!"
+          exit 1
+        fi
+        echo "Check passed: no raw credentials detected."

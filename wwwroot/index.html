@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Table Storage Cleanup</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --panel: #fff; --text: #1f2937; --muted: #6b7280; --border: #e5e7eb;
+    --accent: #2563eb; --accent-hover: #1d4ed8; --danger: #dc2626; --danger-hover: #b91c1c;
+    --ok: #16a34a; --warn: #d97706; --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f172a; --panel: #1e293b; --text: #e2e8f0; --muted: #94a3b8; --border: #334155; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); background: var(--panel); }
+  header h1 { font-size: 18px; margin: 0; }
+  header .user { color: var(--muted); font-size: 13px; }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel h2 { font-size: 15px; margin: 0 0 12px; display: flex; justify-content: space-between; align-items: center; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .stat { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .stat .value { font-size: 16px; font-weight: 600; word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  button { font: inherit; border: 1px solid var(--border); background: var(--panel); color: var(--text); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+  button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button.danger:hover:not(:disabled) { background: var(--danger-hover); }
+  button.link { border: none; background: none; color: var(--accent); padding: 0; }
+  input[type=number], input[type=text] { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); }
+  input[type=number] { width: 90px; }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; }
+  .row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; border: 1px solid var(--border); white-space: nowrap; }
+  .badge.Succeeded { color: var(--ok); border-color: var(--ok); }
+  .badge.Running, .badge.Queued { color: var(--accent); border-color: var(--accent); }
+  .badge.CompletedWithErrors { color: var(--warn); border-color: var(--warn); }
+  .badge.Failed { color: var(--danger); border-color: var(--danger); }
+  .badge.dry { color: var(--muted); }
+  .muted { color: var(--muted); }
+  .alert { padding: 12px 14px; border-radius: 8px; border: 1px solid var(--danger); color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); grid-column: 1 / -1; }
+  .alert.info { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .tables { margin: 6px 0 4px 26px; }
+  .tables li { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); color: var(--text); max-width: 900px; width: 92vw; padding: 20px; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  code { background: color-mix(in srgb, var(--muted) 15%, transparent); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧹 Table Storage Cleanup</h1>
+  <span class="user" id="user"></span>
+</header>
+
+<main>
+  <div id="alert" class="alert" hidden></div>
+
+  <section class="panel wide">
+    <h2>Configuration</h2>
+    <div class="stats" id="stats"><span class="spinner"></span></div>
+  </section>
+
+  <section class="panel">
+    <h2>Storage accounts <button class="link" id="toggleAll">Select all</button></h2>
+    <ul id="accounts"><li class="muted">Loading…</li></ul>
+  </section>
+
+  <section class="panel">
+    <h2>Run cleanup</h2>
+    <div class="row">
+      <label class="inline">Retention (days) <input type="number" id="retention" min="1"></label>
+      <label class="inline"><input type="checkbox" id="dryRun" checked> Dry run (count only)</label>
+    </div>
+    <p class="muted" id="runHint">Rows with a <code>Timestamp</code> older than the cutoff will be counted.</p>
+    <div class="row">
+      <button class="primary" id="runBtn">Start dry run</button>
+      <span class="muted" id="runScope"></span>
+    </div>
+  </section>
+
+  <section class="panel wide">
+    <h2>Run history <button id="refreshBtn">Refresh</button></h2>
+    <table>
+      <thead><tr><th>Started</th><th>Trigger</th><th>Mode</th><th>Status</th><th class="num">Retention</th><th class="num">Matched</th><th class="num">Deleted</th><th>Duration</th></tr></thead>
+      <tbody id="runs"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </section>
+</main>
+
+<dialog id="runDialog">
+  <h2 id="runDialogTitle" style="margin-top:0">Run details</h2>
+  <div id="runDialogBody"></div>
+  <div class="row" style="justify-content:flex-end;margin:16px 0 0"><button id="closeDialog">Close</button></div>
+</dialog>
+
+<dialog id="confirmDialog">
+  <h2 style="margin-top:0;color:var(--danger)">Permanently delete data?</h2>
+  <p id="confirmText"></p>
+  <p>Table Storage has no soft delete — this cannot be undone. Type <strong>DELETE</strong> to confirm.</p>
+  <input type="text" id="confirmInput" autocomplete="off" style="width:100%">
+  <div class="row" style="justify-content:flex-end;margin:16px 0 0">
+    <button id="confirmCancel">Cancel</button>
+    <button class="danger" id="confirmOk" disabled>Delete rows</button>
+  </div>
+</dialog>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmt = (n) => (n ?? 0).toLocaleString();
+  const fmtDate = (d) => d ? new Date(d).toLocaleString() : '—';
+  const duration = (a, b) => {
+    if (!a) return '—';
+    const s = Math.round(((b ? new Date(b) : new Date()) - new Date(a)) / 1000);
+    return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
+  };
+
+  let overview = null;
+  let pollTimer = null;
+  let openRunId = null;
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, { credentials: 'same-origin', ...options });
+    let body = null;
+    try { body = await res.json(); } catch { /* empty */ }
+    if (!res.ok) throw new Error(body?.error || `${res.status} ${res.statusText}`);
+    return body;
+  }
+
+  function showAlert(message, info = false) {
+    const el = $('alert');
+    el.hidden = !message;
+    el.className = info ? 'alert info' : 'alert';
+    el.textContent = message || '';
+  }
+
+  // ---------- Overview ----------
+  async function loadOverview() {
+    overview = await api('api/overview');
+    $('user').textContent = overview.user ? `Signed in as ${overview.user}` : '';
+    const stats = [
+      ['Retention', `${overview.retentionDays} days`],
+      ['Minimum retention', `${overview.minRetentionDays} days`],
+      ['Table prefix', `${overview.tablePrefix}*`],
+      ['Schedule (CRON, UTC)', overview.timerSchedule || 'not set'],
+      ['Scheduled mode', overview.timerDryRun ? 'Dry run' : 'Delete'],
+      ['Accounts', overview.accounts.length]
+    ];
+    $('stats').innerHTML = stats.map(([l, v]) => `<div class="stat"><div class="label">${esc(l)}</div><div class="value">${esc(v)}</div></div>`).join('');
+    $('retention').min = overview.minRetentionDays;
+    $('retention').value = overview.retentionDays;
+    renderAccounts();
+  }
+
+  function renderAccounts() {
+    const list = $('accounts');
+    if (!overview.accounts.length) {
+      list.innerHTML = `<li class="muted">No storage accounts configured. Add app settings named <code>STORAGE_ACCOUNT_&lt;name&gt;</code>.</li>`;
+      updateRunScope();
+      return;
+    }
+    list.innerHTML = overview.accounts.map(a => `
+      <li data-key="${esc(a.key)}" style="padding:6px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <label class="inline"><input type="checkbox" class="acct" value="${esc(a.key)}" checked>
+            <strong>${esc(a.accountName)}</strong> <span class="muted">${esc(a.key)}</span></label>
+          <span><span class="badge">${esc(a.authMode === 'ManagedIdentity' ? 'Managed identity' : 'Connection string')}</span>
+            <button class="link show-tables">Tables</button></span>
+        </div>
+        <ul class="tables" hidden></ul>
+      </li>`).join('');
+    list.querySelectorAll('.acct').forEach(cb => cb.addEventListener('change', updateRunScope));
+    list.querySelectorAll('.show-tables').forEach(btn => btn.addEventListener('click', () => toggleTables(btn.closest('li'))));
+    updateRunScope();
+  }
+
+  async function toggleTables(li) {
+    const ul = li.querySelector('.tables');
+    if (!ul.hidden) { ul.hidden = true; return; }
+    ul.hidden = false;
+    ul.innerHTML = '<li class="muted"><span class="spinner"></span> Loading tables…</li>';
+    try {
+      const key = li.dataset.key;
+      const data = await api(`api/accounts/${encodeURIComponent(key)}/tables`);
+      if (!data.tables.length) { ul.innerHTML = `<li class="muted">No ${esc(overview.tablePrefix)}* tables found.</li>`; return; }
+      ul.innerHTML = data.tables.map(t => `<li><span>${esc(t)}</span><span><span class="est muted"></span> <button class="link estimate" data-table="${esc(t)}">Estimate</button></span></li>`).join('');
+      ul.querySelectorAll('.estimate').forEach(btn => btn.addEventListener('click', () => estimate(key, btn)));
+    } catch (e) {
+      ul.innerHTML = `<li style="color:var(--danger)">${esc(e.message)}</li>`;
+    }
+  }
+
+  async function estimate(key, btn) {
+    const out = btn.parentElement.querySelector('.est');
+    btn.disabled = true;
+    out.innerHTML = '<span class="spinner"></span>';
+    try {
+      const days = $('retention').value;
+      const d = await api(`api/accounts/${encodeURIComponent(key)}/tables/${encodeURIComponent(btn.dataset.table)}/estimate?retentionDays=${days}`);
+      out.textContent = `${d.capped ? '≥ ' : ''}${fmt(d.count)} rows older than ${d.retentionDays}d`;
+    } catch (e) {
+      out.textContent = e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  const selectedAccounts = () => [...document.querySelectorAll('.acct:checked')].map(cb => cb.value);
+
+  function updateRunScope() {
+    const total = overview?.accounts.length ?? 0;
+    const sel = selectedAccounts().length;
+    $('runScope').textContent = total ? `${sel} of ${total} account(s) selected` : '';
+    $('runBtn').disabled = sel === 0;
+    $('toggleAll').textContent = sel === total ? 'Select none' : 'Select all';
+  }
+
+  function updateRunMode() {
+    const dry = $('dryRun').checked;
+    $('runBtn').textContent = dry ? 'Start dry run' : 'Delete old rows';
+    $('runBtn').className = dry ? 'primary' : 'danger';
+    const days = Number($('retention').value) || 0;
+    const cutoff = new Date(Date.now() - days * 864e5);
+    $('runHint').innerHTML = `Rows with a <code>Timestamp</code> before <strong>${esc(cutoff.toLocaleString())}</strong> will be ${dry ? 'counted (nothing is deleted)' : '<strong style="color:var(--danger)">permanently deleted</strong>'}.`;
+  }
+
+  // ---------- Runs ----------
+  async function startRun() {
+    const dryRun = $('dryRun').checked;
+    const retentionDays = Number($('retention').value);
+    const all = selectedAccounts().length === overview.accounts.length;
+    const accounts = all ? [] : selectedAccounts();
+
+    if (!dryRun) {
+      const ok = await confirmDelete(`Rows older than ${retentionDays} days will be deleted from ${overview.tablePrefix}* tables in ${all ? 'all' : accounts.length} storage account(s).`);
+      if (!ok) return;
+    }
+
+    $('runBtn').disabled = true;
+    try {
+      const run = await api('api/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accounts, dryRun, retentionDays })
+      });
+      showAlert(`Run queued (${run.dryRun ? 'dry run' : 'delete'}). Progress will appear below.`, true);
+      await loadRuns();
+    } catch (e) {
+      showAlert(e.message);
+    } finally {
+      updateRunScope();
+    }
+  }
+
+  function confirmDelete(text) {
+    return new Promise(resolve => {
+      const dlg = $('confirmDialog');
+      $('confirmText').textContent = text;
+      $('confirmInput').value = '';
+      $('confirmOk').disabled = true;
+      const done = (v) => { dlg.close(); resolve(v); };
+      $('confirmInput').oninput = () => { $('confirmOk').disabled = $('confirmInput').value !== 'DELETE'; };
+      $('confirmOk').onclick = () => done(true);
+      $('confirmCancel').onclick = () => done(false);
+      dlg.oncancel = () => resolve(false);
+      dlg.showModal();
+      $('confirmInput').focus();
+    });
+  }
+
+  async function loadRuns() {
+    let runs;
+    try {
+      runs = await api('api/runs?top=25');
+    } catch (e) {
+      $('runs').innerHTML = `<tr><td colspan="8" style="color:var(--danger)">${esc(e.message)}</td></tr>`;
+      return;
+    }
+    $('runs').innerHTML = runs.length ? runs.map(r => `
+      <tr class="clickable" data-id="${esc(r.runId)}">
+        <td>${esc(fmtDate(r.startedUtc || r.createdUtc))}</td>
+        <td>${esc(r.trigger)}${r.requestedBy && r.trigger === 'Manual' ? ` <span class="muted">(${esc(r.requestedBy)})</span>` : ''}</td>
+        <td>${r.dryRun ? '<span class="badge dry">Dry run</span>' : '<span class="badge">Delete</span>'}</td>
+        <td><span class="badge ${esc(r.status)}">${r.status === 'Running' ? '<span class="spinner"></span> ' : ''}${esc(r.status)}</span></td>
+        <td class="num">${esc(r.retentionDays)}d</td>
+        <td class="num">${fmt(r.totalMatched)}</td>
+        <td class="num">${fmt(r.totalDeleted)}</td>
+        <td>${esc(duration(r.startedUtc, r.completedUtc))}</td>
+      </tr>`).join('') : '<tr><td colspan="8" class="muted">No runs yet.</td></tr>';
+    $('runs').querySelectorAll('tr.clickable').forEach(tr => tr.addEventListener('click', () => openRun(tr.dataset.id)));
+
+    const active = runs.some(r => r.status === 'Queued' || r.status === 'Running');
+    clearTimeout(pollTimer);
+    if (active || openRunId) pollTimer = setTimeout(async () => { await loadRuns(); if (openRunId) await renderRun(openRunId); }, 4000);
+  }
+
+  async function openRun(id) {
+    openRunId = id;
+    await renderRun(id);
+    $('runDialog').showModal();
+  }
+
+  async function renderRun(id) {
+    try {
+      const r = await api(`api/runs/${encodeURIComponent(id)}`);
+      $('runDialogTitle').innerHTML = `Run details <span class="badge ${esc(r.status)}">${esc(r.status)}</span>`;
+      const accounts = r.accounts.map(a => `
+        <h3 style="font-size:14px;margin:16px 0 6px">${esc(a.accountName)} <span class="muted">${esc(a.key)}</span> <span class="badge ${esc(a.status)}">${esc(a.status)}</span></h3>
+        ${a.error ? `<p style="color:var(--danger)">${esc(a.error)}</p>` : ''}
+        ${a.tables.length ? `<table><thead><tr><th>Table</th><th class="num">Matched</th><th class="num">Deleted</th><th class="num">Failed batches</th></tr></thead><tbody>
+          ${a.tables.map(t => `<tr><td>${esc(t.tableName)}${t.error ? `<div style="color:var(--danger)">${esc(t.error)}</div>` : ''}</td><td class="num">${fmt(t.rowsMatched)}</td><td class="num">${fmt(t.rowsDeleted)}</td><td class="num">${fmt(t.failedBatches)}</td></tr>`).join('')}
+        </tbody></table>` : `<p class="muted">${a.status === 'Queued' ? 'Waiting…' : a.status === 'Running' ? 'Scanning…' : 'No matching tables.'}</p>`}`).join('');
+      $('runDialogBody').innerHTML = `
+        <div class="stats">
+          <div class="stat"><div class="label">Mode</div><div class="value">${r.dryRun ? 'Dry run' : 'Delete'}</div></div>
+          <div class="stat"><div class="label">Retention</div><div class="value">${esc(r.retentionDays)} days</div></div>
+          <div class="stat"><div class="label">Matched</div><div class="value">${fmt(r.totalMatched)}</div></div>
+          <div class="stat"><div class="label">Deleted</div><div class="value">${fmt(r.totalDeleted)}</div></div>
+          <div class="stat"><div class="label">Duration</div><div class="value">${esc(duration(r.startedUtc, r.completedUtc))}</div></div>
+        </div>
+        <p class="muted" style="margin:10px 0 0">Run <code>${esc(r.runId)}</code> · ${esc(r.trigger)} by ${esc(r.requestedBy || '—')} · created ${esc(fmtDate(r.createdUtc))}</p>
+        ${r.error ? `<p style="color:var(--danger)">${esc(r.error)}</p>` : ''}
+        ${accounts || '<p class="muted">Waiting for the worker to pick up this run…</p>'}`;
+    } catch (e) {
+      $('runDialogBody').innerHTML = `<p style="color:var(--danger)">${esc(e.message)}</p>`;
+    }
+  }
+
+  // ---------- Wiring ----------
+  $('runBtn').addEventListener('click', startRun);
+  $('refreshBtn').addEventListener('click', loadRuns);
+  $('dryRun').addEventListener('change', updateRunMode);
+  $('retention').addEventListener('input', updateRunMode);
+  $('toggleAll').addEventListener('click', () => {
+    const boxes = document.querySelectorAll('.acct');
+    const check = [...boxes].some(b => !b.checked);
+    boxes.forEach(b => { b.checked = check; });
+    updateRunScope();
+  });
+  $('closeDialog').addEventListener('click', () => $('runDialog').close());
+  $('runDialog').addEventListener('close', () => { openRunId = null; });
+
+  (async () => {
+    try {
+      await loadOverview();
+      updateRunMode();
+      await loadRuns();
+    } catch (e) {
+      showAlert(e.message);
+      $('stats').innerHTML = '';
+      $('accounts').innerHTML = '';
+      $('runs').innerHTML = '';
+    }
+  })();
+})();
+</script>
+</body>
+</html>

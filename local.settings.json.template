@@ -1,0 +1,12 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "STORAGE_ACCOUNT_1": "DefaultEndpointsProtocol=https;AccountName=yourstorageaccount;AccountKey=yourAccountKey==;EndpointSuffix=core.windows.net",
+    "RETENTION_DAYS": "90",
+    "TIMER_SCHEDULE": "0 0 3 * * *",
+    "UI_ALLOW_ANONYMOUS": "true",
+    "UI_ENABLED": "true"
+  }
+}
